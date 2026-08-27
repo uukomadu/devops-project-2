@@ -1,0 +1,129 @@
+# Values for my-microservice (WordPress on EKS).
+#
+# Differences from the stock `helm create` scaffold are marked [CHANGED].
+# Each one is load-bearing -- see the gap review in the project docs.
+
+replicaCount: 1
+
+# [CHANGED] repository nginx -> wordpress, and tag is set EXPLICITLY.
+# The scaffold ships tag: "" which falls back to Chart.AppVersion ("1.16.0").
+# Left alone that renders wordpress:1.16.0, which does not exist -> ImagePullBackOff.
+image:
+  repository: wordpress
+  pullPolicy: IfNotPresent
+  tag: "php8.3-apache"
+
+# [CHANGED] New block. WordPress needs a database; the scaffold has no concept
+# of one. Consumed by templates/mariadb.yaml and by the env: block in
+# templates/deployment.yaml.
+#
+# Do NOT commit real passwords here. Override at install time:
+#   helm install ... --set database.password=... --set database.rootPassword=...
+database:
+  image: "mariadb:11.4"
+  name: wordpress
+  user: wordpress
+  password: ""
+  rootPassword: ""
+
+# [CHANGED] New passthrough for extra WordPress env vars (WORDPRESS_DEBUG,
+# WORDPRESS_CONFIG_EXTRA, etc). Empty is fine.
+env: []
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+
+# [CHANGED] type ClusterIP -> LoadBalancer, so AWS provisions an ELB and the
+# site is reachable from a browser.
+#
+# Careful with port: the scaffold wires containerPort to .Values.service.port,
+# so changing this changes BOTH the Service port and the container port.
+# WordPress listens on 80. Leave it.
+service:
+  type: LoadBalancer
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+httpRoute:
+  enabled: false
+
+# [CHANGED] scaffold ships resources: {} -- meaning no CPU request.
+#
+# This block is the reason autoscaling works at all. HPA computes utilization
+# as (actual CPU / requested CPU). With no request there is no denominator,
+# the HPA reports <unknown>, and it never scales. Delete requests.cpu and
+# Step 9 silently stops working.
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 300m
+    memory: 256Mi
+
+# [CHANGED] added initialDelaySeconds. WordPress + Apache take a few seconds
+# to come up; the scaffold's zero-delay probes would restart the pod mid-boot.
+# Path / returns a 302 to the install wizard, which counts as probe success.
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 15
+  failureThreshold: 6
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  failureThreshold: 6
+
+# [CHANGED] enabled: false -> true, maxReplicas 100 -> 5, target 80 -> 50.
+#
+# Using the chart's built-in templates/hpa.yaml instead of a standalone
+# hpa.yaml file. It already uses autoscaling/v2, and it templates the scale
+# target from the same fullname helper as the Deployment -- so the name can
+# never drift out of sync the way the original runbook's did.
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 50
+
+# [REMOVED] the original runbook's persistence: block.
+#
+# Two reasons. It was inert -- the scaffold has no PVC template reading those
+# keys, and Helm does not warn on unused values. And it was self-defeating: an
+# EBS volume is ReadWriteOnce, so the moment HPA scales past one replica the
+# extra pods sit Pending on FailedAttachVolume. Stateless pods are what makes
+# horizontal scaling possible. For durable wp-content the answer is EFS with
+# ReadWriteMany, not EBS.
+volumes: []
+volumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

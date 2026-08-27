@@ -1,0 +1,108 @@
+{{/*
+MariaDB backing store for WordPress.
+
+The stock `helm create` scaffold ships a single generic container. WordPress is
+not self-contained -- without a database it returns HTTP 500, the readiness
+probe never passes, and the LoadBalancer registers zero healthy targets.
+This file supplies that database: a Secret for the credentials, a ClusterIP
+Service for in-cluster discovery, and a single-replica Deployment.
+
+Note the pod labels below deliberately differ from the chart's
+selectorLabels (they carry the "-db" suffix). If they matched, the WordPress
+LoadBalancer Service would select these database pods too and route web
+traffic at port 3306.
+*/}}
+{{- $fullName := include "my-microservice.fullname" . -}}
+{{- $dbName := printf "%s-db" (include "my-microservice.name" .) -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullName }}-db
+  labels:
+    {{- include "my-microservice.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  mariadb-root-password: {{ required "database.rootPassword must be set (use --set or a values file)" .Values.database.rootPassword | quote }}
+  mariadb-password: {{ required "database.password must be set (use --set or a values file)" .Values.database.password | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-db
+  labels:
+    {{- include "my-microservice.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3306
+      targetPort: mysql
+      protocol: TCP
+      name: mysql
+  selector:
+    app.kubernetes.io/name: {{ $dbName }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-db
+  labels:
+    {{- include "my-microservice.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: two MariaDB pods must never run against the
+  # same storage at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $dbName }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $dbName }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: mariadb
+          image: {{ .Values.database.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullName }}-db
+                  key: mariadb-root-password
+            - name: MARIADB_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: MARIADB_USER
+              value: {{ .Values.database.user | quote }}
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullName }}-db
+                  key: mariadb-password
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 45
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

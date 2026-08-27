@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+._*
+
+# Helm
+*.tgz
+charts/*.tgz
+
+# Local overrides that may contain real credentials
+values.local.yaml
+values.secret.yaml
+*.local.yaml
+
+# Never commit these
+kubeconfig
+*.pem
+*.key
+.env
