@@ -1,4 +1,4 @@
-# devops-project-2 — WordPress on Amazon EKS with Helm and HPA
+# WordPress on Amazon EKS with Helm and HPA
 
 A Helm chart that deploys WordPress plus a MariaDB backing store to Amazon EKS, with a
 Horizontal Pod Autoscaler that scales on CPU. Built, deployed, load-tested and torn down
